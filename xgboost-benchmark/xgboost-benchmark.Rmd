@@ -3,3 +3,49 @@ title: "Kaggle Digit Recognizer: XGBoost Benchmark"
 output: html_notebook
 ---
 
+This notebook demonstrates a simple benchmark model using extreme gradient boosting from the xgboost package.
+
+```{r, message = F, warning = F}
+library(xgboost)
+library(readr)
+library(dplyr)
+
+# Import data
+train <- read_csv("../data/train.csv", progress = FALSE)
+test  <- read_csv("../data/test.csv", progress = FALSE)
+
+head(train)
+```
+
+```{r}
+# xgboost requirement: convert everything to numeric
+train <- mutate_all(train, as.numeric)
+test  <- mutate_all(test,  as.numeric)
+
+# Separate training data and labels
+X <- train %>% select(-label) %>% as.matrix()
+y <- train$label
+
+# Fit model
+fit <- xgboost(X, y, nrounds = 25, objective = 'multi:softmax', num_class = 10)
+fit
+```
+
+```{r}
+# Predict test data
+predictions <- predict(fit, newdata = as.matrix(test)) %>% as.integer()
+
+# Bundle into proper results table
+results <- data.frame(
+    ImageId = seq_len(nrow(test)),
+    Label   = predictions
+)
+
+head(results)
+```
+
+```{r}
+# Save results
+write_csv(results, "../output/xgboost_benchmark.csv")
+```
+
