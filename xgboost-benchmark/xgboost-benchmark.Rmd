@@ -1,6 +1,6 @@
 ---
 title: "Kaggle Digit Recognizer: XGBoost Benchmark"
-output: html_notebook
+output: github_document
 ---
 
 This notebook demonstrates a simple benchmark model using extreme gradient boosting from the xgboost package.
