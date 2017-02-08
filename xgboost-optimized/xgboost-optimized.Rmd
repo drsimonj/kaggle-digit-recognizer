@@ -1,0 +1,186 @@
+---
+title: 'Kaggle Digit Recogniser: Optimzing XGBoost with pipelearner'
+author: "Dr Simon Jackson"
+output: github_document
+---
+
+This notebook seeks to optimize an extreme gradient boosting model from the xgboost package via grid search and cross validation with the package, pipelearner.
+
+# Library Setup
+
+```{r, message = F, warning = F}
+library(xgboost)
+library(tidyverse)
+library(pipelearner)  # Installed via devtools::install_github('drsimonj/pipelearner)
+```
+
+# Data setup
+
+```{r, message = F, warning = F}
+# Import data
+train <- read_csv("../data/train.csv", progress = FALSE)
+test  <- read_csv("../data/test.csv", progress = FALSE)
+
+head(train)
+```
+
+First we'll set up the data accordingly.
+
+```{r}
+# xgboost requirement: convert everything to numeric
+train <- mutate_all(train, as.numeric)
+test  <- mutate_all(test,  as.numeric)
+
+# Normalize all pixels to same 0-1 range (for good measure)
+pixel_min <- select(train, -label) %>% as.matrix() %>% min
+pixel_max <- select(train, -label) %>% as.matrix() %>% max
+
+normalize_pixels <- function(x, min, max) {
+  (x - pixel_min) / (pixel_max - pixel_min)
+}
+
+train <- mutate_at(train, vars(-label), funs(normalize_pixels))
+test  <- mutate_all(test,  funs(normalize_pixels))
+```
+
+# Prep for pipelearner
+
+To leverage pipelearner for xgboost, we need to setup a few custom functions. For an explanation of these, see [this blogR post](https://drsimonj.svbtle.com/with-our-powers-combined-xgboost-and-pipelearner).
+
+```{r}
+# pipelearner friendly function
+pl_xgboost <- function(data, formula, ...) {
+  data <- as.data.frame(data)
+
+  X_names <- as.character(lazyeval::f_rhs(formula))
+  y_name  <- as.character(lazyeval::f_lhs(formula))
+
+  if (X_names == '.') {
+    X_names <- names(data)[names(data) != y_name]
+  }
+
+  X <- data.matrix(data[, X_names])
+  y <- data[[y_name]]
+
+  xgboost(data = X, label = y, ...)
+}
+
+# Function to extract accuracy form a learned pipelearner object
+accuracy <- function(data, fit, target_var) {
+  # Convert resample object to data frame
+  data <- as.data.frame(data)
+  # Get feature matrix and labels
+  X <- data %>%
+    select(-matches(target_var)) %>% 
+    as.matrix()
+  y <- data[[target_var]]
+  # Obtain predicted class
+  y_hat <- predict(fit, newdata = X) %>% as.integer()
+  # Return accuracy
+  mean(y_hat == y)
+}
+```
+
+Let's do a small trial to check everything works:
+
+```{r}
+# Setup
+pl <- pipelearner(train, pl_xgboost, label ~ .,
+                  # Fixed hyperparameters
+                  objective = 'multi:softmax',
+                  num_class = 10,
+                  # Searchable hyperparameters
+                  nrounds = c(1, 2))
+
+# Learning
+fits <- pl %>% learn()
+
+# Extracting results
+results <- fits %>% 
+  mutate(
+    # hyperparameters
+    nrounds = map_dbl(params, "nrounds"),
+    # Accuracy
+    accuracy_train = pmap_dbl(list(train, fit, target), accuracy),
+    accuracy_test  = pmap_dbl(list(test,  fit, target), accuracy)
+  ) %>%
+  select(nrounds, dplyr::contains('accuracy'))
+
+results
+```
+
+Looking good!
+
+# Optimization
+
+We'll start simple by increasing the number of training iterations (`nrounds`). We'll add in 5-fold cross-validation too.
+
+```{r}
+# Setup
+pl <- pipelearner(train, pl_xgboost, label ~ .,
+                  # Fixed hyperparameters
+                  objective = 'multi:softmax',
+                  num_class = 10,
+                  nrounds = 25,
+                  print_every_n = 5) %>% 
+  learn_cvpairs(k = 5)
+
+# Learning
+fits <- pl %>% learn()
+
+# Extracting results
+results <- fits %>% 
+  mutate(
+    accuracy_train = pmap_dbl(list(train, fit, target), accuracy),
+    accuracy_test  = pmap_dbl(list(test,  fit, target), accuracy)
+  )
+
+results
+```
+
+
+# Grid search
+
+We'll start with a low and fixed number of training iterations. We'll also ignore the learning rate `eta` for the moment, as we will probably reduce it, but after we increase the number of iterations.
+
+```{r}
+# Setup
+pl <- pipelearner(train, pl_xgboost, label ~ .,
+                  # Fixed hyperparameters
+                  objective = 'multi:softmax',
+                  num_class = 10,
+                  nrounds = 4,
+                  verbose = 0,  # To silence messages for now
+                  # Searchable hyperparameters
+                  max_depth = c(20, 60, 100),
+                  subsample = c(.3, .5, .7),
+                  colsample_bytree = c(.3, .5, .7))
+
+# Learning
+fits <- pl %>% learn()
+```
+
+Extracting results...
+
+```{r}
+results <- fits %>% 
+  mutate(
+    # hyperparameters
+    max_depth = map_dbl(params, "max_depth"),
+    subsample = map_dbl(params, "subsample"),
+    colsample_bytree = map_dbl(params, "colsample_bytree"),
+    # Accuracy
+    accuracy_train = pmap_dbl(list(train, fit, target), accuracy),
+    accuracy_test  = pmap_dbl(list(test,  fit, target), accuracy)
+  ) %>%
+  select(max_depth:accuracy_test)
+```
+```{r}
+arrange(results, desc(accuracy_test))
+```
+
+
+
+
+
+
